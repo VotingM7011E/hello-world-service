@@ -26,7 +26,6 @@ jobs:
 
       - name: Install dependencies
         run: |
-          cd 10-testing-ci/backend-tests
           pip install -r requirements.txt
 
       - name: Log in to GHCR
