@@ -2,25 +2,39 @@ name: Build and Push to GHCR
 on:
   push:
     branches: [ "main" ]
+
 jobs:
   build:
     runs-on: ubuntu-latest
+    
     steps:
-      - uses: actions/checkout@v3
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Cache pip dependencies
+        uses: actions/cache@v3
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: Install dependencies
+        run: |
+          cd 10-testing-ci/backend-tests
+          pip install -r requirements.txt
+
       - name: Log in to GHCR
         run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+
       - name: Build and Push Image
         run: |
           IMAGE_TAG=${{ github.sha }}
-          IMAGE_NAME=ghcr.io/${{ github.repository_owner }}/hello-world:${IMAGE_TAG}
+          IMAGE_NAME=ghcr.io/${{ github.repository_owner }}/hello-world-service:${IMAGE_TAG}
           docker build -t $IMAGE_NAME .
           docker push $IMAGE_NAME
-      - name: Update GitOps Repo
-        run: |
-          git clone https://github.com/YOUR_ORG/gitops-demo.git
-          cd gitops-demo
-          sed -i "s/tag:.*/tag: $IMAGE_TAG/" environments/dev/values.yaml
-          git config --global user.email "ci@example.com"
-          git config --global user.name "CI Bot"
-          git commit -am "Update image tag to $IMAGE_TAG"
-          git push

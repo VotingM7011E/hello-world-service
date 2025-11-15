@@ -1,6 +1,10 @@
-FROM python:3.11-slim
+FROM python:3.13.7-alpine
+
 WORKDIR /app
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-COPY . .
-CMD ["python", "app.py"]
+
+COPY ./app/requirements.txt /app
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip3 install -r requirements.txt
+
+COPY ./app/src /app
+CMD ["python3", "app.py"]
