@@ -55,7 +55,7 @@ jobs:
             TARGET_ENV="$INPUT_ENV"
           else
             case "${GITHUB_REF_NAME}" in
-              main)    TARGET_ENV="production" ;;
+              main)    TARGET_ENV="dev" ;;
               staging) TARGET_ENV="staging" ;;
               dev)     TARGET_ENV="dev" ;;
               *) echo "Unsupported branch '${GITHUB_REF_NAME}'. Provide env via workflow_dispatch input."; exit 1 ;;
