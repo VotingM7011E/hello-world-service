@@ -75,7 +75,9 @@ jobs:
           git clone --branch "$GITOPS_BRANCH" \
             "https://x-access-token:${{ secrets.GITOPS_TOKEN }}@github.com/${GITOPS_REPO}.git" gitops-repo
 
-          VALUES_FILE="gitops-repo/environments/${{ steps.resolve.outputs.TARGET_ENV }}/${APP_FILE}"
+          cd gitops-repo
+          
+          VALUES_FILE="environments/${{ steps.resolve.outputs.TARGET_ENV }}/${APP_FILE}"
           if [[ ! -f "$VALUES_FILE" ]]; then
             echo "ERROR: $VALUES_FILE not found"; exit 1
           fi
@@ -89,7 +91,6 @@ jobs:
           echo "2222"
 
           # Commit & push
-          cd gitops-repo
           git config user.name  "GitOps CI"
           git config user.email "actions@github.com"
           git add "$VALUES_FILE"
