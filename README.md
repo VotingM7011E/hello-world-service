@@ -61,14 +61,14 @@ gitops/
 
 ```mermaid
 flowchart LR
-    A[Push to GitHub] --> B[GitHub Actions CI]
-    B --> C[Build Docker Image]
-    C --> D[Push to GHCR (ghcr.io)]
-    D --> E[Clone GitOps Repo]
-    E --> F[Update env values with new image:tag]
-    F --> G[Commit & Push to GitOps]
-    G --> H[Argo CD detects change]
-    H --> I[Sync to Kubernetes]
+  A[Push to GitHub] --> B[GitHub Actions CI]
+  B --> C[Build Docker image]
+  C --> D[Push image to GHCR]
+  D --> E[Clone GitOps repo]
+  E --> F[Update env values with new image tag]
+  F --> G[Commit and push to GitOps]
+  G --> H[Argo CD detects change]
+  H --> I[Sync to Kubernetes]
 ```
 
 ---
@@ -84,7 +84,7 @@ metadata:
 spec:
   project: default
   source:
-    repoURL: https://github.com/<org>/gitops.git
+    repoURL: https://github.com/VotingM7011E/gitops.git
     targetRevision: main
     path: hello-world-service-app
     helm:
@@ -100,6 +100,12 @@ spec:
     syncOptions:
       - CreateNamespace=true
 ```
+
+The manifests fille currently can be applied with:
+```bash
+kubectl apply -f manifests/hello-world-service-dev.yaml
+```
+this creates the Argo CD application with the given sync policies. Argo CD continuously monitor the value files for new images. Deploys new images based on currently reported tag.
 
 ---
 
@@ -141,13 +147,11 @@ on:
         required: false
         default: ""
 
-concurrency:
-  group: gitops-${{ github.ref }}
-  cancel-in-progress: false
-
 jobs:
   build:
     runs-on: ubuntu-latest
+
+    # Permissions for *this* repo (code + GHCR). The push to GitOps repo uses the PAT secret.
     permissions:
       contents: read
       packages: write
@@ -155,31 +159,30 @@ jobs:
       id-token: write
 
     env:
+      # --- App image ---
       IMAGE_REPO: ghcr.io/votingm7011e/hello-world-service
+
+      # --- GitOps repo + paths ---
       GITOPS_REPO: votingm7011e/gitops
       GITOPS_BRANCH: main
-      APP_FILE: hello-world-service.yaml
+      APP_FILE: hello-world-service.yaml     # The environment files in gitops repo
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
       - name: Log in to GHCR
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
 
       - name: Build and Push Image
         id: build
         run: |
-          set -euo pipefail
           IMAGE_TAG=${{ github.sha }}
           docker build -t "$IMAGE_REPO:$IMAGE_TAG" .
           docker push "$IMAGE_REPO:$IMAGE_TAG"
           echo "IMAGE_TAG=$IMAGE_TAG" >> "$GITHUB_OUTPUT"
 
+      # Resolve environment: workflow input (if provided) > branch mapping
       - name: Resolve target environment
         id: resolve
         shell: bash
@@ -189,35 +192,43 @@ jobs:
             TARGET_ENV="$INPUT_ENV"
           else
             case "${GITHUB_REF_NAME}" in
-              main)    TARGET_ENV="production" ;;
+              main)    TARGET_ENV="dev" ;;
               staging) TARGET_ENV="staging" ;;
               dev)     TARGET_ENV="dev" ;;
               *) echo "Unsupported branch '${GITHUB_REF_NAME}'. Provide env via workflow_dispatch input."; exit 1 ;;
             esac
           fi
           echo "TARGET_ENV=$TARGET_ENV" >> "$GITHUB_OUTPUT"
+          echo "Will update environments/$TARGET_ENV/$APP_FILE"
 
-      - name: Install yq
-        run: |
-          sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
-          sudo chmod +x /usr/local/bin/yq
-
+      # --- Minimal & fast GitOps update (HTTPS + org secret PAT, sed-based) ---
       - name: Update GitOps repo with new image tag
         env:
           IMAGE_TAG: ${{ steps.build.outputs.IMAGE_TAG }}
         run: |
           set -euo pipefail
-          git clone --branch "$GITOPS_BRANCH" "https://x-access-token:${{ secrets.GITOPS_TOKEN }}@github.com/${GITOPS_REPO}.git" gitops-repo
+
+          # Clone GitOps repo using the org-level PAT secret (fine-grained: Contents RW)
+          git clone --branch "$GITOPS_BRANCH" \
+            "https://x-access-token:${{ secrets.GITOPS_TOKEN }}@github.com/${GITOPS_REPO}.git" gitops-repo
+
           cd gitops-repo
+            
           VALUES_FILE="environments/${{ steps.resolve.outputs.TARGET_ENV }}/${APP_FILE}"
           if [[ ! -f "$VALUES_FILE" ]]; then
             echo "ERROR: $VALUES_FILE not found"; exit 1
           fi
-          yq -i ".image.repository = "${IMAGE_REPO}" | .image.tag = "${IMAGE_TAG}"" "$VALUES_FILE"
+
+          # Update .image.repository and .image.tag (simple sed; requires stable formatting)
+          sed -i "s|^\(\s*repository:\s*\).*|\1${IMAGE_REPO}|" "$VALUES_FILE"
+          sed -i "s|^\(\s*tag:\s*\).*|\1${IMAGE_TAG}|" "$VALUES_FILE"
+
+          # Commit & push
           git config user.name  "GitOps CI"
           git config user.email "actions@github.com"
           git add "$VALUES_FILE"
-          git commit -m "chore(${{ steps.resolve.outputs.TARGET_ENV }}): bump ${IMAGE_REPO} to ${IMAGE_TAG} [skip ci]" && git push origin "$GITOPS_BRANCH" || echo "No changes to commit"
+          git commit -m "chore(${{ steps.resolve.outputs.TARGET_ENV }}): bump ${IMAGE_REPO} to ${IMAGE_TAG} [skip ci]" || echo "No changes to commit"
+          git push origin "$GITOPS_BRANCH"
 ```
 
 ---
