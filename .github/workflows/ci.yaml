@@ -38,12 +38,12 @@ jobs:
 
     env:
       # --- App image ---
-      IMAGE_REPO: ghcr.io/votingm7011e/hello-world-service
+      IMAGE_REPO: ghcr.io/votingm7011e/hello-world
 
       # --- GitOps repo + paths ---
       GITOPS_REPO: votingm7011e/gitops
       GITOPS_BRANCH: main
-      APP_FILE: hello-world-service.yaml  # env values file name
+      APP_FILE: hello-world.yaml  # env values file name
       # Toggle: push (default) or pr
       GITOPS_UPDATE_MODE: ${{ github.event.inputs.update_mode || 'push' }}
 
@@ -166,7 +166,7 @@ jobs:
 
           # Prepare branch for PR-mode
           if [[ "${{ env.GITOPS_UPDATE_MODE }}" == "pr" ]]; then
-            BRANCH="bump/${{ steps.resolve.outputs.TARGET_ENV }}/hello-world-service-${IMAGE_TAG}"
+            BRANCH="bump/${{ steps.resolve.outputs.TARGET_ENV }}/hello-world-${IMAGE_TAG}"
             git checkout -b "$BRANCH"
           fi
 
@@ -206,7 +206,7 @@ jobs:
             - Repository: `${{ env.IMAGE_REPO }}`
             - Tag: `${{ steps.tag.outputs.IMAGE_TAG }}`
             - Environment: `${{ steps.resolve.outputs.TARGET_ENV }}`
-          branch: "bump/${{ steps.resolve.outputs.TARGET_ENV }}/hello-world-service-${{ steps.tag.outputs.IMAGE_TAG }}"
+          branch: "bump/${{ steps.resolve.outputs.TARGET_ENV }}/hello-world-${{ steps.tag.outputs.IMAGE_TAG }}"
           base: ${{ env.GITOPS_BRANCH }}
           labels: |
             gitops

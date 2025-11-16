@@ -35,8 +35,8 @@ Holds:
 
 ### GitOps Repository
 Holds:
-- Helm chart + templates under a chart path, e.g. `hello-world-service-app/`
-- Environment value files under `environments/<env>/hello-world-service.yaml`
+- Helm chart + templates under a chart path, e.g. `hello-world-app/`
+- Environment value files under `environments/<env>/hello-world.yaml`
 - Argo CD Application `manifests/` files, for creating apps for Argo CD to monitor and sync
 
 Recommended layout:
@@ -44,18 +44,18 @@ Recommended layout:
 gitops/
 ├── environments
 │   ├── dev
-│   │   ├── hello-world-service.yaml
+│   │   ├── hello-world.yaml
 │   │   └── other-app.yaml
 │   ├── production
-│   │   ├── hello-world-service.yaml
+│   │   ├── hello-world.yaml
 │   │   └── other-app.yaml
 │   └── staging
-│   │   ├── hello-world-service.yaml
+│   │   ├── hello-world.yaml
 │   │   └── other-app.yaml
 ├── other-app
 │   ├── Chart.yaml
 │   └── templates/
-├── hello-world-service-app
+├── hello-world-app
 │   ├── Chart.yaml
 │   └── templates
 │       ├── configmap.yaml
@@ -63,7 +63,7 @@ gitops/
 │       ├── ingress.yaml
 │       └── service.yaml
 └── manifests
-    ├── hello-world-service-dev.yaml
+    ├── hello-world-dev.yaml
     └── other-app-production.yaml
 ```
 
@@ -91,20 +91,20 @@ flowchart LR
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
-  name: hello-world-service-dev
+  name: hello-world-dev
   namespace: argocd
 spec:
   project: default
   source:
     repoURL: https://github.com/VotingM7011E/gitops.git
     targetRevision: main
-    path: hello-world-service-app
+    path: hello-world-app
     helm:
       valueFiles:
-        - ../environments/dev/hello-world-service.yaml
+        - ../environments/dev/hello-world.yaml
   destination:
     server: https://kubernetes.default.svc
-    namespace: hello-world-service-dev
+    namespace: hello-world-dev
   syncPolicy:
     automated:
       prune: true
@@ -115,7 +115,7 @@ spec:
 
 The manifests fille currently can be applied with:
 ```bash
-kubectl apply -f manifests/hello-world-service-dev.yaml
+kubectl apply -f manifests/hello-world-dev.yaml
 ```
 this creates the Argo CD application with the given sync policies. Argo CD continuously monitor the value files for new images. Deploys new images based on currently reported tag.
 
@@ -126,7 +126,7 @@ this creates the Argo CD application with the given sync policies. Argo CD conti
 ```yaml
 # Development Environment Configuration
 app:
-  name: hello-world-service
+  name: hello-world
   replicas: 1
 
 domain: helloworldservice-dev.example.com
@@ -190,10 +190,10 @@ jobs:
       id-token: write
 
     env:
-      IMAGE_REPO: ghcr.io/votingm7011e/hello-world-service
+      IMAGE_REPO: ghcr.io/votingm7011e/hello-world
       GITOPS_REPO: votingm7011e/gitops
       GITOPS_BRANCH: main
-      APP_FILE: hello-world-service.yaml
+      APP_FILE: hello-world.yaml
       GITOPS_UPDATE_MODE: ${{ github.event.inputs.update_mode || 'push' }}
 
     steps:
@@ -291,7 +291,7 @@ jobs:
           VALUES_FILE="environments/${{ steps.resolve.outputs.TARGET_ENV }}/${{ env.APP_FILE }}"
           yq -i ".image.repository = \"${{ env.IMAGE_REPO }}\" | .image.tag = \"${IMAGE_TAG}\"" "$VALUES_FILE"
           if [[ "${{ env.GITOPS_UPDATE_MODE }}" == "pr" ]]; then
-            BRANCH="bump/${{ steps.resolve.outputs.TARGET_ENV }}/hello-world-service-${IMAGE_TAG}"
+            BRANCH="bump/${{ steps.resolve.outputs.TARGET_ENV }}/hello-world-${IMAGE_TAG}"
             git checkout -b "$BRANCH"
           fi
           git config user.name "GitOps CI"
@@ -313,7 +313,7 @@ jobs:
           token: ${{ secrets.GITOPS_TOKEN }}
           commit-message: "chore(${{ steps.resolve.outputs.TARGET_ENV }}): bump ${{ env.IMAGE_REPO }} to ${{ steps.tag.outputs.IMAGE_TAG }} [skip ci]"
           title: "chore(${{ steps.resolve.outputs.TARGET_ENV }}): bump ${{ env.IMAGE_REPO }} to ${{ steps.tag.outputs.IMAGE_TAG }}"
-          branch: "bump/${{ steps.resolve.outputs.TARGET_ENV }}/hello-world-service-${{ steps.tag.outputs.IMAGE_TAG }}"
+          branch: "bump/${{ steps.resolve.outputs.TARGET_ENV }}/hello-world-${{ steps.tag.outputs.IMAGE_TAG }}"
           base: ${{ env.GITOPS_BRANCH }}
 ```
 
