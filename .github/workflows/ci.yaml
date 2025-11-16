@@ -3,23 +3,38 @@ name: Build, Push, and Update GitOps
 on:
   push:
     branches: [ "main", "staging", "dev" ]
+    paths:
+      - 'Dockerfile'
+      # - 'src/**'              # uncomment if you add a src/ tree later
+      - 'app.py'
+      - '.github/workflows/**'
+      - '!**/*.md'
   workflow_dispatch:
     inputs:
       env:
         description: "Override target environment (dev|staging|production)"
         required: false
         default: ""
+      update_mode:
+        description: "gitops update mode (push|pr)"
+        required: false
+        default: "push"
+
+concurrency:
+  group: gitops-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   build:
     runs-on: ubuntu-latest
 
-    # Permissions for *this* repo (code + GHCR). The push to GitOps repo uses the PAT secret.
+    # Permissions for this repo + GHCR (OIDC for future signing if desired).
     permissions:
       contents: read
       packages: write
       attestations: write
       id-token: write
+      # Note: pushing/PR to the GitOps repo uses a PAT in secrets.
 
     env:
       # --- App image ---
@@ -28,24 +43,60 @@ jobs:
       # --- GitOps repo + paths ---
       GITOPS_REPO: votingm7011e/gitops
       GITOPS_BRANCH: main
-      APP_FILE: hello-world-service.yaml     # The environment files in gitops repo
+      APP_FILE: hello-world-service.yaml  # env values file name
+      # Toggle: push (default) or pr
+      GITOPS_UPDATE_MODE: ${{ github.event.inputs.update_mode || 'push' }}
 
     steps:
-      - name: Checkout code
+      - name: Checkout code (shallow)
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
 
-      - name: Log in to GHCR
-        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+      # Faster builds with Buildx cache
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
 
-      - name: Build and Push Image
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Combined approach: keep triggers AND a paths-filter to gate expensive work
+      - name: Determine if build is needed
+        id: changes
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            build:
+              - 'Dockerfile'
+              # - 'src/**'
+              - 'app.py'
+              - '.github/workflows/**'
+              # no negation needed here since on.push.paths already excludes *.md
+
+      - name: Stop early (no build needed)
+        if: steps.changes.outputs.build != 'true' && github.event_name == 'push'
+        run: echo "No relevant changes; skipping." && exit 0
+
+      - name: Build and Push Image (cached)
         id: build
-        run: |
-          IMAGE_TAG=${{ github.sha }}
-          docker build -t "$IMAGE_REPO:$IMAGE_TAG" .
-          docker push "$IMAGE_REPO:$IMAGE_TAG"
-          echo "IMAGE_TAG=$IMAGE_TAG" >> "$GITHUB_OUTPUT"
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ env.IMAGE_REPO }}:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
-      # Resolve environment: workflow input (if provided) > branch mapping
+      - name: Export IMAGE_TAG output
+        id: tag
+        run: echo "IMAGE_TAG=${{ github.sha }}" >> "$GITHUB_OUTPUT"
+
+      # Resolve environment: workflow input > branch mapping
       - name: Resolve target environment
         id: resolve
         shell: bash
@@ -62,37 +113,101 @@ jobs:
             esac
           fi
           echo "TARGET_ENV=$TARGET_ENV" >> "$GITHUB_OUTPUT"
-          echo "Will update environments/$TARGET_ENV/$APP_FILE"
+          echo "Will update environments/$TARGET_ENV/${{ env.APP_FILE }}"
 
-      # --- Minimal & fast GitOps update (HTTPS + org secret PAT, sed-based) ---
-      - name: Update GitOps repo with new image tag
-        env:
-          IMAGE_TAG: ${{ steps.build.outputs.IMAGE_TAG }}
+      - name: Install yq (for safe YAML edits)
+        run: |
+          sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
+          sudo chmod +x /usr/local/bin/yq
+
+      - name: Clone GitOps repo (shallow)
         run: |
           set -euo pipefail
+          git clone --depth 1 --branch "${{ env.GITOPS_BRANCH }}" \
+            "https://x-access-token:${{ secrets.GITOPS_TOKEN }}@github.com/${{ env.GITOPS_REPO }}.git" gitops-repo
 
-          # Clone GitOps repo using the org-level PAT secret (fine-grained: Contents RW)
-          git clone --branch "$GITOPS_BRANCH" \
-            "https://x-access-token:${{ secrets.GITOPS_TOKEN }}@github.com/${GITOPS_REPO}.git" gitops-repo
-
+      - name: Calculate desired vs current image tag
+        id: diff
+        env:
+          IMAGE_TAG: ${{ steps.tag.outputs.IMAGE_TAG }}
+        run: |
+          set -euo pipefail
           cd gitops-repo
-          
-          VALUES_FILE="environments/${{ steps.resolve.outputs.TARGET_ENV }}/${APP_FILE}"
-          if [[ ! -f "$VALUES_FILE" ]]; then
-            echo "ERROR: $VALUES_FILE not found"; exit 1
+          VALUES_FILE="environments/${{ steps.resolve.outputs.TARGET_ENV }}/${{ env.APP_FILE }}"
+          test -f "$VALUES_FILE" || { echo "ERROR: $VALUES_FILE not found"; exit 1; }
+
+          # Read current values
+          CURRENT_REPO="$(yq '.image.repository' "$VALUES_FILE")"
+          CURRENT_TAG="$(yq '.image.tag' "$VALUES_FILE")"
+
+          echo "Current repo: $CURRENT_REPO"
+          echo "Current tag : $CURRENT_TAG"
+          echo "New repo    : ${{ env.IMAGE_REPO }}"
+          echo "New tag     : $IMAGE_TAG"
+
+          # Emit a flag to skip commit if nothing changed
+          if [[ "$CURRENT_REPO" == "${{ env.IMAGE_REPO }}" && "$CURRENT_TAG" == "$IMAGE_TAG" ]]; then
+            echo "no_change=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "no_change=false" >> "$GITHUB_OUTPUT"
           fi
 
-          echo "1111"
+      - name: Update values file (only when changed)
+        if: steps.diff.outputs.no_change == 'false'
+        env:
+          IMAGE_TAG: ${{ steps.tag.outputs.IMAGE_TAG }}
+        run: |
+          set -euo pipefail
+          cd gitops-repo
+          VALUES_FILE="environments/${{ steps.resolve.outputs.TARGET_ENV }}/${{ env.APP_FILE }}"
 
-          # Update .image.repository and .image.tag (simple sed; requires stable formatting)
-          sed -i "s|^\(\s*repository:\s*\).*|\1${IMAGE_REPO}|" "$VALUES_FILE"
-          sed -i "s|^\(\s*tag:\s*\).*|\1${IMAGE_TAG}|" "$VALUES_FILE"
+          # Safe YAML update
+          yq -i ".image.repository = \"${{ env.IMAGE_REPO }}\" | .image.tag = \"${IMAGE_TAG}\"" "$VALUES_FILE"
 
-          echo "2222"
+          # Prepare branch for PR-mode
+          if [[ "${{ env.GITOPS_UPDATE_MODE }}" == "pr" ]]; then
+            BRANCH="bump/${{ steps.resolve.outputs.TARGET_ENV }}/hello-world-service-${IMAGE_TAG}"
+            git checkout -b "$BRANCH"
+          fi
 
-          # Commit & push
           git config user.name  "GitOps CI"
           git config user.email "actions@github.com"
           git add "$VALUES_FILE"
-          git commit -m "chore(${{ steps.resolve.outputs.TARGET_ENV }}): bump ${IMAGE_REPO} to ${IMAGE_TAG} [skip ci]" || echo "No changes to commit"
-          git push origin "$GITOPS_BRANCH"
+
+          # Only commit if there are real changes
+          if ! git diff --cached --quiet; then
+            git commit -m "chore(${{ steps.resolve.outputs.TARGET_ENV }}): bump ${{ env.IMAGE_REPO }} to ${IMAGE_TAG} [skip ci]"
+          else
+            echo "No staged changes after yq update."
+          fi
+
+          # Push/PR depending on mode
+          if [[ "${{ env.GITOPS_UPDATE_MODE }}" == "pr" ]]; then
+            git push -u origin "$BRANCH"
+          else
+            # Direct push only if a commit actually happened
+            if git log -1 --pretty=%B | grep -q "bump ${{ env.IMAGE_REPO }} to ${IMAGE_TAG}"; then
+              git push origin "${{ env.GITOPS_BRANCH }}"
+            else
+              echo "No commit, skipping push."
+            fi
+          fi
+
+      # Create PR if in PR mode and there is a branch pushed
+      - name: Open PR to GitOps (PR mode)
+        if: steps.diff.outputs.no_change == 'false' && env.GITOPS_UPDATE_MODE == 'pr'
+        uses: peter-evans/create-pull-request@v6
+        with:
+          token: ${{ secrets.GITOPS_TOKEN }}
+          commit-message: "chore(${{ steps.resolve.outputs.TARGET_ENV }}): bump ${{ env.IMAGE_REPO }} to ${{ steps.tag.outputs.IMAGE_TAG }} [skip ci]"
+          title: "chore(${{ steps.resolve.outputs.TARGET_ENV }}): bump ${{ env.IMAGE_REPO }} to ${{ steps.tag.outputs.IMAGE_TAG }}"
+          body: |
+            Automated image bump:
+            - Repository: `${{ env.IMAGE_REPO }}`
+            - Tag: `${{ steps.tag.outputs.IMAGE_TAG }}`
+            - Environment: `${{ steps.resolve.outputs.TARGET_ENV }}`
+          branch: "bump/${{ steps.resolve.outputs.TARGET_ENV }}/hello-world-service-${{ steps.tag.outputs.IMAGE_TAG }}"
+          base: ${{ env.GITOPS_BRANCH }}
+          labels: |
+            gitops
+            automated
