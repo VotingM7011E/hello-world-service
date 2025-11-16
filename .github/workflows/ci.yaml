@@ -80,9 +80,13 @@ jobs:
             echo "ERROR: $VALUES_FILE not found"; exit 1
           fi
 
+          echo "1111"
+
           # Update .image.repository and .image.tag (simple sed; requires stable formatting)
           sed -i "s|^\(\s*repository:\s*\).*|\1${IMAGE_REPO}|" "$VALUES_FILE"
           sed -i "s|^\(\s*tag:\s*\).*|\1${IMAGE_TAG}|" "$VALUES_FILE"
+
+          echo "2222"
 
           # Commit & push
           cd gitops-repo
