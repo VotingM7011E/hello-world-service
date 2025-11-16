@@ -1,46 +1,93 @@
-name: Build and Push to GHCR
+name: Build, Push, and Update GitOps
+
 on:
   push:
-    branches: [ "main" ]
+    branches: [ "main", "staging", "dev" ]
+  workflow_dispatch:
+    inputs:
+      env:
+        description: "Override target environment (dev|staging|production)"
+        required: false
+        default: ""
 
 jobs:
   build:
     runs-on: ubuntu-latest
 
-    # Sets the permissions granted to the `GITHUB_TOKEN` for the actions in this job.
+    # Permissions for *this* repo (code + GHCR). The push to GitOps repo uses the PAT secret.
     permissions:
       contents: read
       packages: write
       attestations: write
       id-token: write
-    
+
+    env:
+      # --- App image ---
+      IMAGE_REPO: ghcr.io/votingm7011e/hello-world-service
+
+      # --- GitOps repo + paths ---
+      GITOPS_REPO: votingm7011e/gitops
+      GITOPS_BRANCH: main
+      APP_FILE: hello-world-service.yaml     # The environment files in gitops repo
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: '3.11'
-
-      - name: Cache pip dependencies
-        uses: actions/cache@v3
-        with:
-          path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
-          restore-keys: |
-            ${{ runner.os }}-pip-
-
-      - name: Install dependencies
-        run: |
-          pip install -r requirements.txt
 
       - name: Log in to GHCR
         run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
 
       - name: Build and Push Image
+        id: build
         run: |
           IMAGE_TAG=${{ github.sha }}
-          IMAGE_NAME=ghcr.io/votingm7011e/hello-world-service:${IMAGE_TAG}
-          docker build -t $IMAGE_NAME .
-          docker push $IMAGE_NAME
+          docker build -t "$IMAGE_REPO:$IMAGE_TAG" .
+          docker push "$IMAGE_REPO:$IMAGE_TAG"
+          echo "IMAGE_TAG=$IMAGE_TAG" >> "$GITHUB_OUTPUT"
+
+      # Resolve environment: workflow input (if provided) > branch mapping
+      - name: Resolve target environment
+        id: resolve
+        shell: bash
+        run: |
+          INPUT_ENV="${{ github.event.inputs.env }}"
+          if [[ -n "$INPUT_ENV" ]]; then
+            TARGET_ENV="$INPUT_ENV"
+          else
+            case "${GITHUB_REF_NAME}" in
+              main)    TARGET_ENV="production" ;;
+              staging) TARGET_ENV="staging" ;;
+              dev)     TARGET_ENV="dev" ;;
+              *) echo "Unsupported branch '${GITHUB_REF_NAME}'. Provide env via workflow_dispatch input."; exit 1 ;;
+            esac
+          fi
+          echo "TARGET_ENV=$TARGET_ENV" >> "$GITHUB_OUTPUT"
+          echo "Will update environments/$TARGET_ENV/$APP_FILE"
+
+      # --- Minimal & fast GitOps update (HTTPS + org secret PAT, sed-based) ---
+      - name: Update GitOps repo with new image tag
+        env:
+          IMAGE_TAG: ${{ steps.build.outputs.IMAGE_TAG }}
+        run: |
+          set -euo pipefail
+
+          # Clone GitOps repo using the org-level PAT secret (fine-grained: Contents RW)
+          git clone --branch "$GITOPS_BRANCH" \
+            "https://x-access-token:${{ secrets.GITOPS_TOKEN }}@github.com/${GITOPS_REPO}.git" gitops-repo
+
+          VALUES_FILE="gitops-repo/environments/${{ steps.resolve.outputs.TARGET_ENV }}/${APP_FILE}"
+          if [[ ! -f "$VALUES_FILE" ]]; then
+            echo "ERROR: $VALUES_FILE not found"; exit 1
+          fi
+
+          # Update .image.repository and .image.tag (simple sed; requires stable formatting)
+          sed -i "s|^\(\s*repository:\s*\).*|\1${IMAGE_REPO}|" "$VALUES_FILE"
+          sed -i "s|^\(\s*tag:\s*\).*|\1${IMAGE_TAG}|" "$VALUES_FILE"
+
+          # Commit & push
+          cd gitops-repo
+          git config user.name  "GitOps CI"
+          git config user.email "actions@github.com"
+          git add "$VALUES_FILE"
+          git commit -m "chore(${{ steps.resolve.outputs.TARGET_ENV }}): bump ${IMAGE_REPO} to ${IMAGE_TAG} [skip ci]" || echo "No changes to commit"
+          git push origin "$GITOPS_BRANCH"
