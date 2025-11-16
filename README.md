@@ -35,24 +35,36 @@ Holds:
 
 ### GitOps Repository
 Holds:
-- Helm chart + app manifests under a chart path, e.g. `hello-world-service-app/`
+- Helm chart + templates under a chart path, e.g. `hello-world-service-app/`
 - Environment value files under `environments/<env>/hello-world-service.yaml`
-- Argo CD `Application` objects (could be centralized in a platform repo if preferred)
+- Argo CD Application `manifests/` files, for creating apps for Argo CD to monitor and sync
 
 Recommended layout:
-```
+```bash
 gitops/
-├─ hello-world-service-app/           # Helm chart path Argo CD points to
-│  ├─ Chart.yaml
-│  ├─ templates/
-│  └─ values.yaml
-└─ environments/
-   ├─ dev/
-   │  └─ hello-world-service.yaml
-   ├─ staging/
-   │  └─ hello-world-service.yaml
-   └─ production/
-      └─ hello-world-service.yaml
+├── environments
+│   ├── dev
+│   │   ├── hello-world-service.yaml
+│   │   └── other-app.yaml
+│   ├── production
+│   │   ├── hello-world-service.yaml
+│   │   └── other-app.yaml
+│   └── staging
+│   │   ├── hello-world-service.yaml
+│   │   └── other-app.yaml
+├── other-app
+│   ├── Chart.yaml
+│   └── templates/
+├── hello-world-service-app
+│   ├── Chart.yaml
+│   └── templates
+│       ├── configmap.yaml
+│       ├── deployment.yaml
+│       ├── ingress.yaml
+│       └── service.yaml
+└── manifests
+    ├── hello-world-service-dev.yaml
+    └── other-app-production.yaml
 ```
 
 ---
