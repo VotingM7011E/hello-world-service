@@ -86,7 +86,7 @@ jobs:
       - name: Update image tag in GitOps file
         uses: mikefarah/yq@master
         with:
-          cmd: yq eval ".image.tag = \"${{ steps.meta.outputs.tag-names }}\"" -i "gitops-repo/environments/${{ steps.resolve.outputs.TARGET_ENV }}/${{ env.APP_FILE }}"
+          cmd: yq eval '.image.tag = "${{ steps.meta.outputs.tag-names }}"' -i "gitops-repo/environments/${{ steps.resolve.outputs.TARGET_ENV }}/${{ env.APP_FILE }}"
 
       - name: Commit and push GitOps update
         run: |
